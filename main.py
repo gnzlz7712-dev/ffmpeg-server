@@ -4,6 +4,8 @@ import base64
 import os
 import tempfile
 import uuid
+import asyncio
+import edge_tts
 
 app = Flask(__name__)
 
@@ -11,12 +13,49 @@ app = Flask(__name__)
 def health():
     return jsonify({"status": "ok"})
 
+@app.route('/tts', methods=['POST'])
+def text_to_speech():
+    try:
+        data = request.json
+        text = data.get('text', '')
+        voice = data.get('voice', 'es-MX-DaliaNeural')
+
+        if not text:
+            return jsonify({"error": "Se requiere el campo 'text'"}), 400
+
+        tmp_dir = tempfile.mkdtemp()
+        uid = str(uuid.uuid4())[:8]
+        audio_path = os.path.join(tmp_dir, f'audio_{uid}.mp3')
+
+        async def generate():
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(audio_path)
+
+        asyncio.run(generate())
+
+        with open(audio_path, 'rb') as f:
+            audio_b64 = base64.b64encode(f.read()).decode('utf-8')
+
+        try:
+            os.remove(audio_path)
+            os.rmdir(tmp_dir)
+        except:
+            pass
+
+        return jsonify({
+            "success": True,
+            "audio_base64": audio_b64
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/merge', methods=['POST'])
 def merge_videos():
     try:
         data = request.json
 
-        # Obtener los videos y audio en base64
         video1_b64 = data.get('video1_base64', '')
         video2_b64 = data.get('video2_base64', '')
         audio_b64  = data.get('audio_base64', '')
@@ -24,8 +63,6 @@ def merge_videos():
         if not video1_b64 or not video2_b64:
             return jsonify({"error": "Se requieren video1_base64 y video2_base64"}), 400
 
-        # Limpiar prefijos data URL si existen
-        # Ej: "data:video/mp4;base64,XXXX" -> "XXXX"
         def clean_base64(b64_string):
             if ',' in b64_string:
                 return b64_string.split(',')[1]
@@ -34,7 +71,6 @@ def merge_videos():
         video1_b64 = clean_base64(video1_b64)
         video2_b64 = clean_base64(video2_b64)
 
-        # Crear directorio temporal único
         tmp_dir = tempfile.mkdtemp()
         uid = str(uuid.uuid4())[:8]
 
@@ -45,19 +81,16 @@ def merge_videos():
         merged_path  = os.path.join(tmp_dir, f'merged_{uid}.mp4')
         output_path  = os.path.join(tmp_dir, f'output_{uid}.mp4')
 
-        # Guardar videos en disco
         with open(video1_path, 'wb') as f:
             f.write(base64.b64decode(video1_b64))
 
         with open(video2_path, 'wb') as f:
             f.write(base64.b64decode(video2_b64))
 
-        # Crear archivo de concatenación para FFmpeg
         with open(concat_path, 'w') as f:
             f.write(f"file '{video1_path}'\n")
             f.write(f"file '{video2_path}'\n")
 
-        # Paso 1: Unir los 2 videos
         concat_cmd = [
             'ffmpeg', '-y',
             '-f', 'concat',
@@ -68,7 +101,6 @@ def merge_videos():
         ]
         subprocess.run(concat_cmd, check=True, capture_output=True)
 
-        # Paso 2: Agregar audio si existe
         if audio_b64:
             audio_b64 = clean_base64(audio_b64)
             with open(audio_path, 'wb') as f:
@@ -87,14 +119,11 @@ def merge_videos():
             ]
             subprocess.run(audio_cmd, check=True, capture_output=True)
         else:
-            # Sin audio, usar el video unido directamente
             output_path = merged_path
 
-        # Leer video final y convertir a base64
         with open(output_path, 'rb') as f:
             output_b64 = base64.b64encode(f.read()).decode('utf-8')
 
-        # Limpiar archivos temporales
         for path in [video1_path, video2_path, audio_path, concat_path, merged_path, output_path]:
             try:
                 os.remove(path)
