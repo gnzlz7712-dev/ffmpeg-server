@@ -16,38 +16,31 @@ def text_to_speech():
     try:
         data = request.json
         text = data.get('text', '')
-        voice = data.get('voice', 'ef_dora')  # Voz española por defecto
+        lang = data.get('lang', 'es')
+        speed = data.get('speed', 150)
 
         if not text:
             return jsonify({"error": "Se requiere el campo 'text'"}), 400
 
         tmp_dir = tempfile.mkdtemp()
         uid = str(uuid.uuid4())[:8]
-        audio_path = os.path.join(tmp_dir, f'audio_{uid}.wav')
+        wav_path = os.path.join(tmp_dir, f'audio_{uid}.wav')
         mp3_path = os.path.join(tmp_dir, f'audio_{uid}.mp3')
 
-        # Generar audio con Kokoro
-        cmd = [
-            'python', '-c',
-            f'''
-import kokoro
-import soundfile as sf
-pipeline = kokoro.KPipeline(lang_code="e")
-generator = pipeline("{text}", voice="{voice}", speed=1.0)
-audio_chunks = []
-for chunk in generator:
-    audio_chunks.append(chunk.audio)
-import numpy as np
-audio = np.concatenate(audio_chunks)
-sf.write("{audio_path}", audio, 24000)
-'''
+        # Generar audio con espeak-ng
+        espeak_cmd = [
+            'espeak-ng',
+            '-v', lang,
+            '-s', str(speed),
+            '-w', wav_path,
+            text
         ]
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(espeak_cmd, check=True, capture_output=True)
 
-        # Convertir WAV a MP3 con FFmpeg
+        # Convertir WAV a MP3
         ffmpeg_cmd = [
             'ffmpeg', '-y',
-            '-i', audio_path,
+            '-i', wav_path,
             '-codec:a', 'libmp3lame',
             '-qscale:a', '2',
             mp3_path
@@ -57,7 +50,7 @@ sf.write("{audio_path}", audio, 24000)
         with open(mp3_path, 'rb') as f:
             audio_b64 = base64.b64encode(f.read()).decode('utf-8')
 
-        for path in [audio_path, mp3_path]:
+        for path in [wav_path, mp3_path]:
             try:
                 os.remove(path)
             except:
