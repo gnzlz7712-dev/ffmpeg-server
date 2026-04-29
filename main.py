@@ -4,8 +4,6 @@ import base64
 import os
 import tempfile
 import uuid
-import asyncio
-import edge_tts
 
 app = Flask(__name__)
 
@@ -18,26 +16,53 @@ def text_to_speech():
     try:
         data = request.json
         text = data.get('text', '')
-        voice = data.get('voice', 'es-MX-DaliaNeural')
+        voice = data.get('voice', 'ef_dora')  # Voz española por defecto
 
         if not text:
             return jsonify({"error": "Se requiere el campo 'text'"}), 400
 
         tmp_dir = tempfile.mkdtemp()
         uid = str(uuid.uuid4())[:8]
-        audio_path = os.path.join(tmp_dir, f'audio_{uid}.mp3')
+        audio_path = os.path.join(tmp_dir, f'audio_{uid}.wav')
+        mp3_path = os.path.join(tmp_dir, f'audio_{uid}.mp3')
 
-        async def generate():
-            communicate = edge_tts.Communicate(text, voice)
-            await communicate.save(audio_path)
+        # Generar audio con Kokoro
+        cmd = [
+            'python', '-c',
+            f'''
+import kokoro
+import soundfile as sf
+pipeline = kokoro.KPipeline(lang_code="e")
+generator = pipeline("{text}", voice="{voice}", speed=1.0)
+audio_chunks = []
+for chunk in generator:
+    audio_chunks.append(chunk.audio)
+import numpy as np
+audio = np.concatenate(audio_chunks)
+sf.write("{audio_path}", audio, 24000)
+'''
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
 
-        asyncio.run(generate())
+        # Convertir WAV a MP3 con FFmpeg
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',
+            '-i', audio_path,
+            '-codec:a', 'libmp3lame',
+            '-qscale:a', '2',
+            mp3_path
+        ]
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
 
-        with open(audio_path, 'rb') as f:
+        with open(mp3_path, 'rb') as f:
             audio_b64 = base64.b64encode(f.read()).decode('utf-8')
 
+        for path in [audio_path, mp3_path]:
+            try:
+                os.remove(path)
+            except:
+                pass
         try:
-            os.remove(audio_path)
             os.rmdir(tmp_dir)
         except:
             pass
